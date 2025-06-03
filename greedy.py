@@ -13,6 +13,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import euclidean
 
+
 PHI= 1.6180339887498948482 # ppl says this is a beautiful number :)
 def freeman(x, y):
     if (y==0):
@@ -73,7 +74,6 @@ _, binary = cv.threshold(gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU)
 #draw(gray)
 render = cv.cvtColor(gray, cv.COLOR_GRAY2BGR)
 
-
 # Tampilkan grayscale
 plt.figure(figsize=(10,4))
 plt.subplot(1, 2, 1)
@@ -81,13 +81,35 @@ plt.imshow(image_gray, cmap='gray')
 plt.title("Grayscale")
 plt.axis('off')
 
-# Tampilkan hasil thresholding
-plt.figure(figsize=(6,6))
-plt.imshow(gray, cmap='gray')
-plt.title("Thresholded (Otsu)")
-plt.axis('off')
-plt.show()
 
+_, thresh = cv.threshold(gray, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+kernel = np.ones((2,2), np.uint8)
+
+# 1) Opening → erosi, lalu dilasi → bantu buka lubang
+opened = cv.morphologyEx(thresh, cv.MORPH_OPEN, kernel, iterations=1)
+
+# 2) Closing → dilasi, lalu eroai → jaga keutuhan huruf
+closed = cv.morphologyEx(opened, cv.MORPH_CLOSE, kernel, iterations=1)
+
+# Visualisasi
+plt.figure(figsize=(12,4))
+plt.subplot(1,3,1)
+plt.title("Thresholded (Otsu)")
+plt.imshow(thresh, cmap='gray')
+plt.axis('off')
+
+plt.subplot(1,3,2)
+plt.title("Opened (2x2 kernel)")
+plt.imshow(opened, cmap='gray')
+plt.axis('off')
+
+plt.subplot(1,3,3)
+plt.title("Opened + Closed")
+plt.imshow(closed, cmap='gray')
+plt.axis('off')
+
+plt.tight_layout()
+plt.show()
 
 
 #SLIC
@@ -275,11 +297,12 @@ else:
 if combined_skeleton is not None and np.any(combined_skeleton > 0):
     plt.figure(figsize=(8, 8))
     plt.imshow(combined_skeleton, cmap='gray')
-    plt.title("Combined Skeleton of All Components")
+    plt.title("Skeletonization")
     plt.axis('off')
     plt.show()
 else:
     print("Skeleton kosong, tidak ada data untuk ditampilkan.")
+    
 
 # DETEKSI TEPI (EDGE DETECTION)
 edges = cv.Canny(gray, 30, 30)
@@ -291,6 +314,21 @@ contours, hierarchy = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_S
 plt.imshow(edges, cmap="gray")
 plt.title("Edges")
 plt.show()
+
+def evaluasi_skeleton(skeleton, edge):
+    panjang = np.sum(skeleton > 0)
+    num_labels, _ = cv.connectedComponents(skeleton.astype(np.uint8))
+    overlap = np.logical_and(skeleton, edge).sum()
+    return {
+        'panjang_skeleton': panjang,
+        'jumlah_komponen': num_labels - 1,
+        'overlap_dengan_edge': overlap
+    }
+
+hasil = evaluasi_skeleton(combined_skeleton, edges)
+for k, v in hasil.items():
+    print(f"{k}: {v}")
+
 
 import numpy as np
 import cv2 as cv
@@ -424,3 +462,93 @@ for sub_id, subpath in enumerate(sub_paths):
         total_index += 1
 
 print(f"\nTotal Euclidean Distance (semua sub-path): {total_distance:.2f}")
+
+def tsp_path(points):
+    """Greedy TSP path, from leftmost to rightmost."""
+    if len(points) == 0:
+        return []
+
+    visited = [False] * len(points)
+    path = []
+
+    # Mulai dari titik paling kiri
+    start_idx = np.argmin([p[0] for p in points])
+    current = start_idx
+    path.append(points[current])
+    visited[current] = True
+
+    for _ in range(len(points) - 1):
+        current_point = points[current]
+        min_dist = float('inf')
+        next_point = -1
+        for idx, point in enumerate(points):
+            if not visited[idx]:
+                dist = np.linalg.norm(np.array(current_point) - np.array(point))
+                if dist < min_dist:
+                    min_dist = dist
+                    next_point = idx
+        if next_point == -1:
+            break
+        visited[next_point] = True
+        path.append(points[next_point])
+        current = next_point
+
+    return path
+
+def split_tsp_path_by_distance(path, max_distance=JARAK_MAKSIMUM):
+    """Pisahkan path menjadi subpath jika jarak antar-node melebihi max_distance."""
+    if len(path) < 2:
+        return [path]
+
+    subpaths = []
+    current_subpath = [path[0]]
+
+    for i in range(1, len(path)):
+        prev_point = path[i - 1]
+        curr_point = path[i]
+        distance = np.linalg.norm(np.array(prev_point) - np.array(curr_point))
+        if distance > max_distance:
+            subpaths.append(current_subpath)
+            current_subpath = [curr_point]
+        else:
+            current_subpath.append(curr_point)
+
+    if current_subpath:
+        subpaths.append(current_subpath)
+
+    return subpaths
+
+# Ambil titik skeleton
+skeleton_points = np.argwhere(combined_skeleton > 0)
+skeleton_points = [(x[1], x[0]) for x in skeleton_points]  # (x, y)
+
+# Buat jalur TSP
+tsp_path_full = tsp_path(skeleton_points)
+
+# Pisahkan jalur TSP berdasarkan threshold jarak
+subpaths = split_tsp_path_by_distance(tsp_path_full, max_distance=JARAK_MAKSIMUM)
+
+# Buat figure
+plt.figure(figsize=(12, 8))
+for idx, path in enumerate(subpaths):
+    # Buat canvas hitam dengan ukuran sama dengan gambar asli
+    subpath_mask = np.zeros_like(combined_skeleton, dtype=np.uint8)
+
+    # Gambar setiap titik subpath ke mask
+    for point in path:
+        x, y = point
+        subpath_mask[y, x] = 255  # Putih
+
+    # Optional: dilate agar terlihat lebih tebal
+    kernel = np.ones((3, 3), np.uint8)
+    subpath_mask = cv.dilate(subpath_mask, kernel, iterations=1)
+
+    # Tampilkan hasil di subplot
+    plt.subplot(1, len(subpaths), idx + 1)
+    plt.imshow(subpath_mask, cmap='gray')
+    plt.axis('off')
+    plt.title(f'Subpath {idx+1}')
+
+plt.suptitle('Hasil Pemotongan Path TSP ke dalam Gambar Terpisah')
+plt.tight_layout()
+plt.show()
