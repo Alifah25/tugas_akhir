@@ -1,7 +1,3 @@
-# SCRIPT PEMOTONGAN 1 YANG TITIK AWALNYA DARI KANAN KE KIRI
-
-
-
 # usage: python -u line2hist.py <inputimage>
 import os
 #os.chdir("/shm")
