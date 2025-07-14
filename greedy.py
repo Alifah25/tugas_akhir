@@ -1,3 +1,6 @@
+# SCRIPT PEMOTONGAN YANG GAMBARNYA TERSIMPAN DI DOWNLOAD
+
+
 # usage: python -u line2hist.py <inputimage>
 import os
 #os.chdir("/shm")
@@ -332,129 +335,250 @@ plt.show()
 
 
 
-# TRAVELLING SALESMAN PROBLEM
+
+
+# TRAVELLING SALESMAN PROBLEM (TSP)
 import numpy as np
 import cv2 as cv
 import matplotlib.pyplot as plt
 import networkx as nx
 from scipy.spatial.distance import euclidean
-from scipy.spatial import cKDTree
+from collections import defaultdict
+from skimage.morphology import skeletonize
 
+# ====================
+# STEP 1: Dapatkan combined_skeleton dari komponen (BUKAN dari thinning OpenCV)
+# ====================
+
+skeleton_components = []
+
+for n in range(len(components)):
+    binary_mat = (components[n].mat == RASMVAL).astype(np.uint8)
+    skeleton = skeletonize(binary_mat).astype(np.uint8)
+    skeleton_components.append(skeleton)
+
+if len(skeleton_components) > 0:
+    combined_skeleton = np.zeros_like(skeleton_components[0], dtype=np.uint8)
+    for skeleton in skeleton_components:
+        combined_skeleton |= skeleton
+else:
+    combined_skeleton = None
+
+# ====================
+# Fungsi bantu: buat graf dari tetangga 8-konektivitas skeleton
+# ====================
+def build_skeleton_graph(skeleton_img):
+    h, w = skeleton_img.shape
+    G = nx.Graph()
+    coords = np.column_stack(np.where(skeleton_img > 0))
+    for y, x in coords:
+        for dy in [-1, 0, 1]:
+            for dx in [-1, 0, 1]:
+                if dy == 0 and dx == 0:
+                    continue
+                ny, nx_ = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx_ < w and skeleton_img[ny, nx_] > 0:
+                    p1 = (x, y)
+                    p2 = (nx_, ny)
+                    dist = euclidean(p1, p2)
+                    G.add_edge(p1, p2, weight=dist)
+    return G
+
+# ====================
+# STEP 2: Jalankan TSP jika skeleton valid
+# ====================
 JARAK_MAKSIMUM = 4
-LOOP_RADIUS = 5
+LOOP_RADIUS = 6
 
 if combined_skeleton is not None and np.any(combined_skeleton > 0):
-    # Connected Components
-    num_labels, labels = cv.connectedComponents((combined_skeleton > 0).astype(np.uint8))
+    points = np.column_stack(np.where(combined_skeleton > 0))[:, ::-1]
+    points = [tuple(p) for p in points]
 
-    all_subpaths = []
-    total_distance = 0
-    total_index = 1
+    if len(points) > 1:
+        G = build_skeleton_graph(combined_skeleton)
 
-    print("Sub-path details:")
+        # Deteksi loop
+        loop_nodes = set()
+        for cycle in nx.cycle_basis(G):
+            total_len = 0
+            for i in range(len(cycle)):
+                a = cycle[i]
+                b = cycle[(i + 1) % len(cycle)]
+                if G.has_edge(a, b):
+                    total_len += G[a][b]['weight']
+            # Tambahkan batasan jumlah titik dan panjang siklus
+            if 5 <= len(cycle) <= 80 and total_len <= LOOP_RADIUS * len(cycle) * 1.5:
+                loop_nodes.update(cycle)
 
-    for label in range(1, num_labels):
-        mask = (labels == label).astype(np.uint8)
-        coords = np.column_stack(np.where(mask > 0))[:, ::-1]
-        coords = [tuple(p) for p in coords]
+        # Konversi ke indeks untuk digunakan di algoritma
+        loop_nodes_idx = [i for i, p in enumerate(points) if p in loop_nodes]
 
-        def tsp_greedy_loop_aware(points):
-            if len(points) == 0:
+        def tsp_greedy_with_revisit(points, loop_nodes_idx, max_visits=2):
+            if not points:
                 return []
 
-            G = nx.Graph()
-            for i, p1 in enumerate(points):
-                for j, p2 in enumerate(points[i+1:], start=i+1):
-                    dist = euclidean(p1, p2)
-                    if dist <= JARAK_MAKSIMUM:
-                        G.add_edge(p1, p2, weight=dist)
+            visits = [0] * len(points)
+            tsp_path = []
 
-            start = max(points, key=lambda pt: (pt[0], -pt[1]))
-            path = [start]
-            visit_count = {pt: 0 for pt in points}
-            visit_count[start] = 1
-            tree = cKDTree(points)
+            start_idx = np.argmax([p[1] for p in points])  # Paling kanan
+            current_idx = start_idx
+            tsp_path.append(points[current_idx])
+            visits[current_idx] += 1
 
-            while len([pt for pt in points if visit_count[pt] == 0]) > 0:
-                last = path[-1]
-                idxs = tree.query_ball_point(last, JARAK_MAKSIMUM)
-                nearest = None
+            for _ in range(len(points) * max_visits):
+                current_point = points[current_idx]
                 min_dist = float('inf')
+                next_idx = None
 
-                for i in idxs:
-                    p = points[i]
-                    if p == last:
+
+# MEMPRIORITASKAN TITIK YANG PALING DEKAT
+                for i, p in enumerate(points):
+                    limit = max_visits if i in loop_nodes_idx else 1
+                    if visits[i] >= limit:
                         continue
-                    dist = euclidean(last, p)
-                    if visit_count[p] >= 1 and dist > LOOP_RADIUS:
-                        continue
-                    if visit_count[p] < 2 and dist < min_dist:
-                        nearest = p
+                    dist = euclidean(current_point, p)
+                    if dist < min_dist:
                         min_dist = dist
+                        next_idx = i
+                  
+                        
+# JIKA PERCABANGAN MEMPRIORITASKAN YANG HORIZONTAL DIBANDING VERTIKAL
+                # for i, p in enumerate(points):
+                #     limit = max_visits if i in loop_nodes_idx else 1
+                #     if visits[i] >= limit:
+                #         continue
+                
+                #     dx = abs(current_point[0] - p[0])  # perbedaan X (horizontal)
+                #     dy = abs(current_point[1] - p[1])  # perbedaan Y (vertikal)
+                #     dist = euclidean(current_point, p)
+                
+                #     # Tambahkan penalti kecil jika gerakannya lebih vertikal
+                #     direction_penalty = 0.1 * (dy > dx)  # 0.1 penalti jika gerak lebih vertikal
+                #     effective_dist = dist + direction_penalty
+                
+                #     if effective_dist < min_dist:
+                #         min_dist = effective_dist
+                #         next_idx = i
 
-                if nearest is None:
+                if next_idx is None:
                     break
 
-                path.append(nearest)
-                visit_count[nearest] += 1
+                visits[next_idx] += 1
+                tsp_path.append(points[next_idx])
+                current_idx = next_idx
 
-            return path
+            return tsp_path
 
-        tsp_full = tsp_greedy_loop_aware(coords)
+        tsp_full = tsp_greedy_with_revisit(points, loop_nodes_idx, max_visits=2)
 
-        # Bagi tsp_full menjadi sub-path
+        # Pisah sub-path berdasarkan jarak
         sub_paths = []
-        current_subpath = [tsp_full[0]] if tsp_full else []
-
+        current_subpath = [tsp_full[0]]
         for i in range(1, len(tsp_full)):
-            dist = euclidean(tsp_full[i-1], tsp_full[i])
+            dist = euclidean(tsp_full[i - 1], tsp_full[i])
             if dist > JARAK_MAKSIMUM:
                 if len(current_subpath) > 1:
                     sub_paths.append(current_subpath)
                 current_subpath = [tsp_full[i]]
             else:
                 current_subpath.append(tsp_full[i])
-
         if len(current_subpath) > 1:
             sub_paths.append(current_subpath)
 
-        all_subpaths.extend(sub_paths)
+        # Hitung jumlah kunjungan
+        visit_counts = defaultdict(int)
+        for pt in tsp_full:
+            visit_counts[pt] += 1
 
-        for sub_id, subpath in enumerate(sub_paths):
-            print(f"\nSub-path (komponen {label}) {sub_id + 1}:")
-            for i in range(len(subpath)):
-                p1 = subpath[i]
-                x, y = map(int, p1)
-                if i < len(subpath) - 1:
-                    p2 = subpath[i + 1]
-                    dist = euclidean(p1, p2)
-                else:
-                    dist = 0
-                print(f"{total_index}. Point ({x}, {y}) | Jarak: {dist:.2f}")
+        # BALIK sub-path: tukar titik awal <-> akhir
+            sub_paths = [list(reversed(p)) for p in sub_paths]
+
+
+        # ====================
+        # STEP 3: VISUALISASI
+        # ====================
+        skeleton_rgb = cv.cvtColor((combined_skeleton * 255).astype(np.uint8), cv.COLOR_GRAY2BGR)
+        plt.figure(figsize=(8, 8))
+        plt.imshow(skeleton_rgb)
+        total_distance = 0
+        colors = ['r', 'y', 'g', 'b', 'm']
+
+        for idx, path in enumerate(sub_paths):
+            is_loop = any(pt in loop_nodes for pt in path)
+            color = 'g' if is_loop else 'r'
+
+            for i in range(len(path) - 1):
+                p1, p2 = path[i], path[i + 1]
+                dist = euclidean(p1, p2)
                 total_distance += dist
-                total_index += 1
 
-    # Visualisasi
-    skeleton_rgb = cv.cvtColor((combined_skeleton * 255).astype(np.uint8), cv.COLOR_GRAY2BGR)
-    plt.figure(figsize=(8, 8))
-    plt.imshow(skeleton_rgb)
-    plt.title(f"TSP Paths (semua huruf)\nTotal Distance: {total_distance:.2f}")
+                plt.plot([p1[0], p2[0]], [p1[1], p2[1]], color + '-', linewidth=1)
+                visit_color = 'purple' if visit_counts[p1] > 1 else 'red'
+                # Plot titik dan tuliskan jumlah kunjungan
+                plt.plot(p1[0], p1[1], 'o', color=visit_color, markersize=3)
+                plt.text(p1[0]+1, p1[1], f"{visit_counts[p1]}", color='white', fontsize=6)
 
-    colors = ['r', 'y', 'g', 'b', 'm']
-    for idx, path in enumerate(all_subpaths):
-        color = colors[idx % len(colors)]
-        for i in range(len(path) - 1):
-            p1, p2 = path[i], path[i+1]
-            plt.plot([p1[0], p2[0]], [p1[1], p2[1]], color+'-', linewidth=1)
-            plt.plot(p1[0], p1[1], 'ro', markersize=2)
-        plt.plot(path[0][0], path[0][1], 'bo', markersize=5)
-        plt.plot(path[-1][0], path[-1][1], 'yo', markersize=5)
 
-    plt.axis('off')
-    plt.tight_layout()
-    plt.show()
+            plt.plot(path[0][0], path[0][1], 'bo', markersize=5)  # Start
+            plt.plot(path[-1][0], path[-1][1], 'yo', markersize=5)  # End
 
-    print(f"\nTotal Euclidean Distance (semua sub-path): {total_distance:.2f}")
+        plt.title(f"TSP with Revisit (Loop Aware)\nTotal Distance: {total_distance:.2f}")
+        plt.axis('off')
+        plt.show()
+
+        # Tampilkan titik yang dikunjungi lebih dari sekali
+        revisited_points = [pt for pt, count in visit_counts.items() if count > 1]
+        print(f"\nTotal titik dikunjungi >1x: {len(revisited_points)}")
+        for i, pt in enumerate(revisited_points[:10]):
+            print(f"{i+1}. Titik {pt} dikunjungi {visit_counts[pt]} kali")
+        else:
+            print("Skeleton kosong, tidak ada data untuk diproses.")
+            
+            
+        # Tampilkan catatan titik yang dikunjungi
+        visited = {
+            'visited_once': [],  # titik-titik yang hanya dilewati sekali.
+            'visited_twice': [], # titik yang dilewati dua kali (looping).
+            'visited_more': []   # titik yang dilewati lebih dari 2x (bisa jadi karena error)
+        }
+
+        for pt, count in visit_counts.items():
+            if count == 1:
+                visited['visited_once'].append(pt)
+            elif count == 2:
+                visited['visited_twice'].append(pt)
+            elif count > 2:
+                visited['visited_more'].append((pt, count))
+    
+    
+# ========================
+# SIMPAN SUB-PATH
+# ========================
+print("\nSub-path details:")
+
+global_counter = 1
+for idx, path in enumerate(sub_paths):
+    # Cek apakah sub-path ini mengandung titik dari loop
+    is_loop = any(pt in loop_nodes for pt in path)
+    
+    # Hitung panjang total
+    total_length = 0
+    for i in range(1, len(path)):
+        total_length += euclidean(path[i], path[i - 1])
+    
+    print(f"\nSub-path {idx+1}: (loop: {is_loop}, panjang: {total_length:.2f})")
+    for i in range(len(path)):
+        pt = tuple(int(v) for v in path[i])
+        if i == 0:
+            dist = 0.00
+        else:
+            dist = euclidean(path[i], path[i - 1])
+        print(f"{global_counter}. Point {pt} | Jarak: {dist:.2f}")
+        global_counter += 1
+
+
+
+
 
 
 
@@ -466,14 +590,14 @@ def direction_code(p1, p2):
     dx = p2[0] - p1[0]
     dy = p2[1] - p1[1]
     directions = {
-        (1, 0): 0,
-        (1, -1): 1,
-        (0, -1): 2,
-        (-1, -1): 3,
-        (-1, 0): 4,
-        (-1, 1): 5,
-        (0, 1): 6,
-        (1, 1): 7
+        (1, 0): 0, # kanan
+        (1, -1): 1, #kanan atas
+        (0, -1): 2, #atas
+        (-1, -1): 3, #kiri atas
+        (-1, 0): 4, #kiri
+        (-1, 1): 5, #kiri bawah
+        (0, 1): 6, #bawah
+        (1, 1): 7 #kanan bawah
     }
     return directions.get((dx, dy), -1)  # -1 jika bukan tetangga langsung
 
@@ -513,7 +637,6 @@ for idx, path in enumerate(sub_paths):
     
     print(f"Sub-path {idx + 1}:", chain_code)
     # print("Chain Code:", chain_code)
-
 
 
 
@@ -575,28 +698,48 @@ def split_tsp_path_by_distance(path, max_distance=JARAK_MAKSIMUM):
 
     return subpaths
 
-# Visualisasi hasil split
-plt.figure(figsize=(12, 8))
-for idx, path in enumerate(sub_paths):  # pakai sub_paths, bukan subpaths
-    subpath_mask = np.zeros_like(combined_skeleton, dtype=np.uint8)
+# Ambil titik skeleton
+skeleton_points = np.argwhere(combined_skeleton > 0)
+skeleton_points = [(x[1], x[0]) for x in skeleton_points]  # (x, y)
 
-    # Gambar garis antar-titik
-    for i in range(len(path) - 1):
-        p1 = path[i]
-        p2 = path[i + 1]
-        cv.line(subpath_mask, (p1[0], p1[1]), (p2[0], p2[1]), 255, 1)
-    for point in path:
-        cv.circle(subpath_mask, (point[0], point[1]), 1, 255, -1)
+# Buat jalur TSP
+tsp_path_full = tsp_path(skeleton_points)
 
-    # Dilasi opsional
-    kernel = np.ones((3, 3), np.uint8)
-    subpath_mask = cv.dilate(subpath_mask, kernel, iterations=1)
+# Pisahkan jalur TSP berdasarkan threshold jarak
+subpaths = split_tsp_path_by_distance(tsp_path_full, max_distance=JARAK_MAKSIMUM)
 
-    plt.subplot(1, len(sub_paths), idx + 1)
-    plt.imshow(subpath_mask, cmap='gray')
+# Buat folder output jika belum ada
+output_folder = 'output_potongan_huruf'
+os.makedirs(output_folder, exist_ok=True)
+
+huruf_terpotong = []  # Menyimpan semua hasil potongan
+for idx, path in enumerate(sub_paths):
+    # Ambil bounding box dari titik-titik subpath
+    xs = [p[0] for p in path]
+    ys = [p[1] for p in path]
+
+    min_x = max(min(xs) - 2, 0)
+    max_x = min(max(xs) + 3, combined_skeleton.shape[1])
+    min_y = max(min(ys) - 2, 0)
+    max_y = min(max(ys) + 3, combined_skeleton.shape[0])
+
+    # Potong area dari skeleton asli
+    potongan = combined_skeleton[min_y:max_y, min_x:max_x]
+    huruf_terpotong.append(potongan)
+
+    # Simpan sebagai gambar
+    filename = os.path.join(output_folder, f"huruf_{idx+1}.png")
+    cv.imwrite(filename, (potongan * 255).astype(np.uint8))
+    print(f"Subpath {idx+1} disimpan: {filename}")
+
+# Visualisasi
+plt.figure(figsize=(4 * len(huruf_terpotong), 6))
+for i, img in enumerate(huruf_terpotong):
+    plt.subplot(1, len(huruf_terpotong), i + 1)
+    plt.imshow(img, cmap='gray')
     plt.axis('off')
-    plt.title(f'Subpath {idx+1}')
+    plt.title(f"Potongan {i+1}")
 
-plt.suptitle(f'Hasil Pemotongan Path TSP ke dalam Gambar Terpisah\nTotal Subpath: {len(sub_paths)}')
+plt.suptitle(f"Pemotongan Huruf Berdasarkan Path TSP\nTotal Subpath: {len(huruf_terpotong)}", fontsize=14)
 plt.tight_layout()
 plt.show()
